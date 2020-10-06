@@ -8,17 +8,22 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strings"
 )
 
-const downloadUrl = "https://songscribe.himadri.eu/"
+const downloadDomain = "https://songscribe.himadri.eu/download"
 
-type indexReturn struct {
-	CurrentVersion string `json:"current_version"`
-	DownloadUrl    string `json:"download_url"`
+type versionFormat struct {
+	DownloadFile string `json:"downloadFile"`
+	BuildVersion string `json:"buildVersion"`
 }
 
-var indexJson string
+type indexReturn struct {
+	CurrentVersion string `json:"currentVersion"`
+	DownloadUrl    string `json:"downloadUrl"`
+}
+
+var platforms = []string{"mac", "windows"}
+var platformJsonMap = map[string]string{}
 
 func main() {
 	http.HandleFunc("/", indexHandler)
@@ -28,8 +33,7 @@ func main() {
 		port = "8080"
 	}
 
-	err := initHandler()
-	if err != nil {
+	if err := initHandler(); err != nil {
 		log.Fatal(err)
 		return
 	}
@@ -40,34 +44,56 @@ func main() {
 }
 
 func initHandler() error {
-	resp, err := http.Get(downloadUrl + "download/version")
+	for _, platform := range platforms {
+		indexJson, err := createIndexJson(platform)
+		if err != nil {
+			return err
+		}
+		platformJsonMap[platform] = *indexJson
+	}
+	return nil
+}
+
+func createIndexJson(platform string) (*string, error) {
+	resp, err := http.Get(fmt.Sprintf("%s/version-%s.json", downloadDomain, platform))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return errors.New(fmt.Sprintf("HTTP request failed: %d", resp.StatusCode))
+		return nil, errors.New(fmt.Sprintf("HTTP request failed: %d", resp.StatusCode))
 	}
 	bodyBytes, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	var versionFile versionFormat
+	if err := json.Unmarshal(bodyBytes, &versionFile); err != nil {
+		return nil, err
 	}
 	retValue := &indexReturn{
-		CurrentVersion: strings.TrimSpace(string(bodyBytes)),
-		DownloadUrl:    downloadUrl,
+		CurrentVersion: versionFile.BuildVersion,
+		DownloadUrl:    fmt.Sprintf("%s/%s", downloadDomain, versionFile.DownloadFile),
 	}
 	jsonBytes, err := json.Marshal(retValue)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	indexJson = string(jsonBytes)
-	return nil
+	indexJson := string(jsonBytes)
+	return &indexJson, nil
 }
 
 func indexHandler(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
+		return
+	}
+
+	platform := r.URL.Query().Get("platform")
+	indexJson := platformJsonMap[platform]
+	if indexJson == "" {
+		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 		return
 	}
 
